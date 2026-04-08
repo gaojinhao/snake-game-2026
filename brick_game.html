@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>打砖块</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0f0f23;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: 'Segoe UI', sans-serif;
+  color: #eee;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.info { display: flex; gap: 2rem; margin-bottom: 8px; font-size: 1rem; }
+.info span { color: #0ff; font-weight: bold; }
+canvas { border: 2px solid #0ff; border-radius: 4px; background: #1a1a2e; display: block; }
+#controls { display: none; margin-top: 16px; gap: 12px; justify-content: center; }
+.ctrl-btn {
+  padding: 14px 28px; border: none; border-radius: 10px;
+  background: #1a1a3e; color: #0ff; font-size: 1.3rem;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.ctrl-btn:active { background: #2a2a5e; }
+#overlay {
+  position: fixed; top:0;left:0;right:0;bottom:0;
+  background: rgba(0,0,0,.7); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; z-index: 10;
+}
+#overlay.hidden { display: none; }
+#overlay h2 { font-size: 1.8rem; margin-bottom: 8px; color: #0ff; }
+#overlay p { margin-bottom: 16px; color: #aaa; }
+#overlay button {
+  padding: 12px 36px; font-size: 1.1rem; border: none; border-radius: 8px;
+  background: #0ff; color: #0f0f23; cursor: pointer; font-weight: bold;
+}
+@media (max-width: 600px) or (pointer: coarse) {
+  #controls { display: flex; }
+}
+</style>
+</head>
+<body>
+<div class="info">得分: <span id="score">0</span> &nbsp; 生命: <span id="lives">3</span> &nbsp; 关卡: <span id="level">1</span></div>
+<canvas id="game"></canvas>
+<div id="controls">
+  <button class="ctrl-btn" id="btn-left">◀</button>
+  <button class="ctrl-btn" id="btn-launch">发射</button>
+  <button class="ctrl-btn" id="btn-right">▶</button>
+</div>
+<div id="overlay">
+  <h2>🧱 打砖块</h2>
+  <p id="msg">点击发射球，消灭所有砖块</p>
+  <button onclick="startGame()">开始游戏</button>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const isMobile = ('ontouchstart' in window) || window.innerWidth < 600;
+const W = isMobile ? Math.min(window.innerWidth - 16, 400) : 480;
+const H = W * 1.3;
+canvas.width = W;
+canvas.height = H;
+
+const BRICK_ROWS = 6, BRICK_COLS = 8;
+const BRICK_W = (W - 20) / BRICK_COLS;
+const BRICK_H = 18;
+const BRICK_PAD = 2;
+const BRICK_TOP = 40;
+const BRICK_LEFT = 10;
+const PAD_W = W * 0.18;
+const PAD_H = 12;
+const BALL_R = 6;
+
+const COLORS = ['#f94144','#f3722c','#f8961e','#f9c74f','#90be6d','#43aa8b','#577590'];
+
+let paddle, ball, bricks, score, lives, level, running, launched, animId;
+let particles = [];
+
+function initBricks() {
+  bricks = [];
+  for (let r = 0; r < BRICK_ROWS; r++) {
+    for (let c = 0; c < BRICK_COLS; c++) {
+      const hp = r < 2 ? (level > 2 ? 2 : 1) : 1;
+      bricks.push({
+        x: BRICK_LEFT + c * BRICK_W + BRICK_PAD,
+        y: BRICK_TOP + r * (BRICK_H + BRICK_PAD) + BRICK_PAD,
+        w: BRICK_W - BRICK_PAD * 2,
+        h: BRICK_H,
+        color: COLORS[r % COLORS.length],
+        alive: true,
+        hp
+      });
+    }
+  }
+}
+
+function resetBall() {
+  launched = false;
+  ball = {
+    x: paddle.x + PAD_W / 2,
+    y: paddle.y - BALL_R - 1,
+    dx: 0, dy: 0,
+    r: BALL_R,
+    speed: 4 + level * 0.5
+  };
+}
+
+function init() {
+  paddle = { x: W / 2 - PAD_W / 2, y: H - 36, w: PAD_W, h: PAD_H };
+  score = 0; lives = 3; level = 1; running = true; particles = [];
+  updateUI();
+  initBricks();
+  resetBall();
+}
+
+function launchBall() {
+  if (launched) return;
+  launched = true;
+  const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.8;
+  ball.dx = ball.speed * Math.cos(angle);
+  ball.dy = ball.speed * Math.sin(angle);
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 8; i++) {
+    particles.push({
+      x, y, color,
+      dx: (Math.random() - 0.5) * 4,
+      dy: (Math.random() - 0.5) * 4,
+      life: 30
+    });
+  }
+}
+
+function update() {
+  if (!running) return;
+  if (!launched) {
+    ball.x = paddle.x + PAD_W / 2;
+    ball.y = paddle.y - BALL_R - 1;
+    return;
+  }
+  ball.x += ball.dx;
+  ball.y += ball.dy;
+  // walls
+  if (ball.x - ball.r < 0) { ball.x = ball.r; ball.dx = Math.abs(ball.dx); }
+  if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.dx = -Math.abs(ball.dx); }
+  if (ball.y - ball.r < 0) { ball.y = ball.r; ball.dy = Math.abs(ball.dy); }
+  // bottom
+  if (ball.y + ball.r > H) {
+    lives--;
+    updateUI();
+    if (lives <= 0) {
+      running = false;
+      showOverlay('游戏结束！得分: ' + score);
+      return;
+    }
+    resetBall();
+    return;
+  }
+  // paddle
+  if (ball.dy > 0 &&
+      ball.y + ball.r >= paddle.y &&
+      ball.y + ball.r <= paddle.y + paddle.h + 4 &&
+      ball.x >= paddle.x && ball.x <= paddle.x + paddle.w) {
+    const hit = (ball.x - paddle.x) / paddle.w;
+    const angle = -Math.PI * (0.15 + hit * 0.7);
+    const spd = ball.speed;
+    ball.dx = spd * Math.cos(angle);
+    ball.dy = spd * Math.sin(angle);
+    ball.y = paddle.y - ball.r - 1;
+  }
+  // bricks
+  for (const b of bricks) {
+    if (!b.alive) continue;
+    if (ball.x + ball.r > b.x && ball.x - ball.r < b.x + b.w &&
+        ball.y + ball.r > b.y && ball.y - ball.r < b.y + b.h) {
+      b.hp--;
+      if (b.hp <= 0) {
+        b.alive = false;
+        score += 10;
+        spawnParticles(b.x + b.w / 2, b.y + b.h / 2, b.color);
+      }
+      // reflect
+      const cx = ball.x - (b.x + b.w / 2);
+      const cy = ball.y - (b.y + b.h / 2);
+      if (Math.abs(cx / b.w) > Math.abs(cy / b.h)) ball.dx = -ball.dx;
+      else ball.dy = -ball.dy;
+      updateUI();
+      break;
+    }
+  }
+  // check win
+  if (bricks.every(b => !b.alive)) {
+    level++;
+    initBricks();
+    resetBall();
+    updateUI();
+  }
+  // particles
+  particles = particles.filter(p => { p.x += p.dx; p.y += p.dy; p.life--; return p.life > 0; });
+}
+
+function draw() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // bricks
+  for (const b of bricks) {
+    if (!b.alive) continue;
+    ctx.fillStyle = b.color;
+    ctx.globalAlpha = b.hp > 1 ? 1 : 0.85;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(b.x, b.y, b.w, 3);
+    if (b.hp > 1) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(b.x + b.w/2 - 4, b.y + b.h/2 - 2, 8, 4);
+    }
+  }
+  ctx.globalAlpha = 1;
+  // paddle
+  const pg = ctx.createLinearGradient(paddle.x, paddle.y, paddle.x + paddle.w, paddle.y);
+  pg.addColorStop(0, '#0ff');
+  pg.addColorStop(1, '#08f');
+  ctx.fillStyle = pg;
+  ctx.beginPath();
+  ctx.roundRect(paddle.x, paddle.y, paddle.w, paddle.h, 6);
+  ctx.fill();
+  // ball
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  ctx.fill();
+  // particles
+  for (const p of particles) {
+    ctx.globalAlpha = p.life / 30;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  // hint
+  if (!launched && running) {
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('点击发射', W / 2, H / 2);
+  }
+}
+
+function updateUI() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('lives').textContent = lives;
+  document.getElementById('level').textContent = level;
+}
+
+function showOverlay(msg) {
+  document.getElementById('msg').textContent = msg;
+  document.getElementById('overlay').classList.remove('hidden');
+}
+
+function loop() {
+  update();
+  draw();
+  animId = requestAnimationFrame(loop);
+}
+
+function startGame() {
+  document.getElementById('overlay').classList.add('hidden');
+  init();
+  if (animId) cancelAnimationFrame(animId);
+  animId = requestAnimationFrame(loop);
+}
+
+// mouse
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  paddle.x = Math.max(0, Math.min(W - PAD_W, (e.clientX - rect.left) * (W / rect.width) - PAD_W / 2));
+});
+canvas.addEventListener('click', () => { if (running) launchBall(); });
+
+// touch on canvas
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.touches[0].clientX - rect.left) * (W / rect.width);
+  paddle.x = Math.max(0, Math.min(W - PAD_W, x - PAD_W / 2));
+}, {passive: false});
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (running) launchBall();
+}, {passive: false});
+
+// buttons
+let moveDir = 0;
+const startMove = (dir) => () => { moveDir = dir; };
+const stopMove = () => { moveDir = 0; };
+document.getElementById('btn-left').addEventListener('touchstart', e => { e.preventDefault(); moveDir = -1; });
+document.getElementById('btn-left').addEventListener('touchend', e => { e.preventDefault(); moveDir = 0; });
+document.getElementById('btn-right').addEventListener('touchstart', e => { e.preventDefault(); moveDir = 1; });
+document.getElementById('btn-right').addEventListener('touchend', e => { e.preventDefault(); moveDir = 0; });
+document.getElementById('btn-launch').addEventListener('touchstart', e => { e.preventDefault(); launchBall(); });
+
+// keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a') moveDir = -1;
+  if (e.key === 'ArrowRight' || e.key === 'd') moveDir = 1;
+  if (e.key === ' ') { launchBall(); e.preventDefault(); }
+});
+document.addEventListener('keyup', e => {
+  if ((e.key === 'ArrowLeft' || e.key === 'a') && moveDir === -1) moveDir = 0;
+  if ((e.key === 'ArrowRight' || e.key === 'd') && moveDir === 1) moveDir = 0;
+});
+
+// button movement loop
+setInterval(() => { paddle.x += moveDir * 6; paddle.x = Math.max(0, Math.min(W - PAD_W, paddle.x)); }, 16);
+
+draw();
+</script>
+</body>
+</html>
